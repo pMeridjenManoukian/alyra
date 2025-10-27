@@ -1,0 +1,354 @@
+import { expect } from "chai";
+import { network } from "hardhat";
+
+const { ethers } = await network.connect();
+
+describe("Voting Contract - Complete Test Suite", function () {
+  
+  // Variables globales
+  let voting;
+  let owner;
+  let voter1;
+  let voter2;
+  let voter3;
+  let nonVoter;
+  let allVoters;
+
+  // 🔧 Calling phases functions
+  async function addAllVoters() {
+    for (const voter of allVoters) {
+      await voting.connect(owner).addVoter(voter.address);
+    }
+  }
+
+  async function verifyAllVotersRegistered() {
+    for (const voter of allVoters) {
+      const voterData = await voting.connect(voter).getVoter(voter.address);
+      expect(voterData.isRegistered).to.be.true;
+      expect(voterData.hasVoted).to.be.false;
+    }
+  }
+
+  async function addAllProposals() {
+    for (let i = 0; i < allVoters.length; i++) {
+      await voting.connect(allVoters[i]).addProposal(`Proposal ${i + 1}`);
+    }
+  }
+
+  async function verifyAllProposals(count) {
+    for (let i = 1; i <= count; i++) {
+      const proposal = await voting.connect(voter1).getOneProposal(i);
+      expect(proposal.description).to.equal(`Proposal ${i}`);
+      expect(proposal.voteCount).to.equal(0);
+    }
+  }
+
+
+  async function differentVotes(proposalId) {
+    for(let i = 0; i<allVoters.length; i++) {
+      console.log("allVoters[i]",allVoters[i],"porposition: ", proposalId, "taille :", allVoters.length);
+      if(i==0 && proposalId != 1) {
+        await voting.connect(allVoters[i]).setVote(1);
+      } else if(i==0 ) {
+        await voting.connect(allVoters[i]).setVote(2);
+      } else {
+        await voting.connect(allVoters[i]).setVote(proposalId);
+      }
+    }
+  }
+
+  async function verifyAllVoted() {
+    for (const voter of allVoters) {
+      const voterData = await voting.connect(voter).getVoter(voter.address);
+      expect(voterData.hasVoted).to.be.true;
+    }
+  }
+
+  async function startProposal() {
+    await voting.connect(owner).startProposalsRegistering();
+  }
+
+  async function startVoting() {
+    await voting.connect(owner).endProposalsRegistering();
+    await voting.connect(owner).startVotingSession();
+  }
+
+  async function endAndTally() {
+    await voting.connect(owner).endVotingSession();
+    await voting.connect(owner).tallyVotes();
+  }
+
+  
+  
+  // DEPLOYMENT AND CONSTRUCTOR TESTS
+  // ========================================
+  
+  describe("Constructor & Deployment", function () {
+   beforeEach(async function () {
+      [owner, voter1, voter2, voter3, nonVoter] = await ethers.getSigners();
+      allVoters = [voter1, voter2, voter3];
+      voting = await ethers.deployContract("Voting", [owner.address], {
+        value: ethers.parseEther("1.0")
+      });
+    });
+
+    it("Should deploy with correct owner AND correct workflow status", async function () {
+      voting = await ethers.deployContract("Voting", [owner.address], {
+        value: ethers.parseEther("1.0")
+      });
+      expect(await voting.owner()).to.equal(owner.address);
+      expect(await voting.workflowStatus()).to.equal(0);
+    });
+
+    it("Should accept ETH during deployment", async function () {
+      voting = await ethers.deployContract("Voting", [owner.address], {
+        value: ethers.parseEther("1.0")
+      });
+      const balance = await ethers.provider.getBalance(await voting.getAddress());
+      expect(balance).to.equal(ethers.parseEther("1.0"));
+    });
+
+  
+  });
+
+  // TEST REGITRATION
+  // ========================================
+  
+  describe("Voter Registration", function () {
+    
+    beforeEach(async function () {
+      [owner, voter1, voter2, voter3, nonVoter] = await ethers.getSigners();
+      allVoters = [voter1, voter2, voter3];
+      voting = await ethers.deployContract("Voting", [owner.address], {
+        value: ethers.parseEther("1.0")
+      });
+    });
+
+    it("Should register multiple voters successfully", async function () {
+      await addAllVoters();
+      await verifyAllVotersRegistered();
+    });
+
+    it("Should emit VoterRegistered event for each voter", async function () {
+      await expect(voting.connect(owner).addVoter(voter1.address))
+        .to.emit(voting, "VoterRegistered")
+        .withArgs(voter1.address);
+    });
+
+    it("Should revert if non-owner tries to add voter", async function () {
+      await expect(
+        voting.connect(voter1).addVoter(voter2.address)
+      ).to.be.revertedWithCustomError(voting, "OwnableUnauthorizedAccount");
+    });
+
+    it("Should revert if voter is already registered", async function () {
+      await voting.connect(owner).addVoter(voter1.address);
+      
+      await expect(
+        voting.connect(owner).addVoter(voter1.address)
+      ).to.be.revertedWith("Already registered");
+    });
+
+    it("Should revert if trying to register after workflow started", async function () {
+      await voting.connect(owner).addVoter(voter1.address);
+      await voting.connect(owner).startProposalsRegistering();
+      
+      await expect(
+        voting.connect(owner).addVoter(voter2.address)
+      ).to.be.revertedWith("Voters registration is not open yet");
+    });
+  });
+
+  
+  // TEST PROPOSALS
+  // ========================================
+  
+  describe("Proposal Registration", function () {
+    
+    beforeEach(async function () {
+      [owner, voter1, voter2, voter3, nonVoter] = await ethers.getSigners();
+      allVoters = [voter1, voter2, voter3];
+      voting = await ethers.deployContract("Voting", [owner.address], {
+        value: ethers.parseEther("1.0")
+      });
+      await addAllVoters();
+      await startProposal();
+    });
+
+    it("Should allow voters to add proposals", async function () {
+      await addAllProposals();
+      await verifyAllProposals(3);
+    });
+
+    it("Should emit ProposalRegistered event with correct ID", async function () {
+      // ID 0 is GENESIS, so first user proposal is ID 1
+      await expect(voting.connect(voter1).addProposal("Test Proposal"))
+        .to.emit(voting, "ProposalRegistered")
+        .withArgs(1);
+    });
+
+    it("Should revert if non-voter tries to add proposal", async function () {
+      await expect(
+        voting.connect(nonVoter).addProposal("Proposal")
+      ).to.be.revertedWith("You're not a voter");
+    });
+
+    it("Should revert if proposal is empty", async function () {
+      await expect(
+        voting.connect(voter1).addProposal("")
+      ).to.be.revertedWith("Vous ne pouvez pas ne rien proposer");
+    });
+
+    it("Should revert if adding proposal at wrong workflow status", async function () {
+      await voting.connect(owner).endProposalsRegistering();
+      
+      await expect(
+        voting.connect(voter1).addProposal("Proposal")
+      ).to.be.revertedWith("Proposals are not allowed yet");
+    });
+  });
+
+  // TEST VOTING
+  // ========================================
+  
+  describe("Voting Session", function () {
+    
+    beforeEach(async function () {
+      [owner, voter1, voter2, voter3, nonVoter] = await ethers.getSigners();
+      allVoters = [voter1, voter2, voter3];
+      voting = await ethers.deployContract("Voting", [owner.address], {
+        value: ethers.parseEther("1.0")
+      });
+      await addAllVoters();
+      await startProposal();
+      await addAllProposals();
+      await startVoting();
+    });
+
+    it("Should allow voters to vote for proposals", async function () {
+      await differentVotes(2);
+      await verifyAllVoted();
+      
+      const proposal = await voting.connect(voter1).getOneProposal(1);
+      expect(proposal.voteCount).to.equal(3);
+    });
+
+    it("Should emit Voted event with correct parameters", async function () {
+      await expect(voting.connect(voter1).setVote(1))
+        .to.emit(voting, "Voted")
+        .withArgs(voter1.address, 1);
+    });
+
+    it("Should update voter's hasVoted and votedProposalId", async function () {
+      await voting.connect(voter1).setVote(1);
+      
+      const voterData = await voting.connect(voter1).getVoter(voter1.address);
+      expect(voterData.hasVoted).to.be.true;
+      expect(voterData.votedProposalId).to.equal(1);
+    });
+
+    it("Should revert if voter tries to vote twice", async function () {
+      await voting.connect(voter1).setVote(1);
+      
+      await expect(
+        voting.connect(voter1).setVote(1)
+      ).to.be.revertedWith("You have already voted");
+    });
+
+    it("Should revert if voting for non-existent proposal", async function () {
+      await expect(
+        voting.connect(voter1).setVote(999)
+      ).to.be.revertedWith("Proposal not found");
+    });
+
+    it("Should revert if non-voter tries to vote", async function () {
+      await expect(
+        voting.connect(nonVoter).setVote(1)
+      ).to.be.revertedWith("You're not a voter");
+    });
+
+    it("Should revert if voting at wrong workflow status", async function () {
+      await voting.connect(owner).endVotingSession();
+      
+      await expect(
+        voting.connect(voter2).setVote(1)
+      ).to.be.revertedWith("Voting session havent started yet");
+    });
+
+    it("Should handle split votes correctly", async function () {
+      // 2 votes for proposal 1, 1 vote for proposal 2
+      await voting.connect(voter1).setVote(1);
+      await voting.connect(voter2).setVote(1);
+      await voting.connect(voter3).setVote(2);
+      
+      const prop1 = await voting.connect(voter1).getOneProposal(1);
+      const prop2 = await voting.connect(voter1).getOneProposal(2);
+      
+      expect(prop1.voteCount).to.equal(2);
+      expect(prop2.voteCount).to.equal(1);
+    });
+  });
+
+
+  // TEST RESULT VOTING PHASE
+  // ========================================
+  
+  describe("Tally Votes", function () {
+    
+    beforeEach(async function () {
+      [owner, voter1, voter2, voter3, nonVoter] = await ethers.getSigners();
+      allVoters = [voter1, voter2, voter3];
+      voting = await ethers.deployContract("Voting", [owner.address], {
+        value: ethers.parseEther("1.0")
+      });
+      await addAllVoters();
+      await startProposal();
+      await addAllProposals();
+      await startVoting();
+    });
+
+it("correct winning proposal with different proposals", async function () {
+      // All vote for proposal 2
+      await differentVotes(2);
+      await endAndTally();
+      
+      expect(await voting.winningProposalID()).to.equal(2);
+    });
+
+    it("Should handle tie by choosing first proposal with max votes", async function () {
+      // 1 vote each for proposals 1 and 2
+      await voting.connect(voter1).setVote(1);
+      await voting.connect(voter2).setVote(2);
+      await voting.connect(voter3).setVote(1);
+      
+      await endAndTally();
+      
+      // Should be 1 (first one with max votes = 2)
+      expect(await voting.winningProposalID()).to.equal(1);
+    });
+
+    it("Should emit WorkflowStatusChange event when tallying", async function () {
+      await voting.connect(voter1).setVote(1);
+      await voting.connect(owner).endVotingSession();
+      
+      await expect(voting.connect(owner).tallyVotes())
+        .to.emit(voting, "WorkflowStatusChange")
+        .withArgs(4, 5);
+    });
+
+    it("Should revert if tallying before voting session ends", async function () {
+      await expect(
+        voting.connect(owner).tallyVotes()
+      ).to.be.revertedWith("Current status is not voting session ended");
+    });
+
+    it("Should only allow owner to tally votes", async function () {
+      await voting.connect(voter1).setVote(1);
+      await voting.connect(owner).endVotingSession();
+      
+      await expect(
+        voting.connect(voter1).tallyVotes()
+      ).to.be.revertedWithCustomError(voting, "OwnableUnauthorizedAccount");
+    });
+  });
+});
